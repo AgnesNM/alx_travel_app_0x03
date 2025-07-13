@@ -4,7 +4,9 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = 'your-secret-key-here-change-in-production'
+
 DEBUG = True
+
 ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0']
 
 INSTALLED_APPS = [
@@ -37,7 +39,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'alx_travel_app_0x01.urls'
+ROOT_URLCONF = 'alx_travel_app_0x03.urls'  # Updated for 0x03
 
 TEMPLATES = [
     {
@@ -55,7 +57,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'alx_travel_app_0x01.wsgi.application'
+WSGI_APPLICATION = 'alx_travel_app_0x03.wsgi.application'  # Updated for 0x03
 
 # Custom User Model
 AUTH_USER_MODEL = 'listings.User'
@@ -146,29 +148,118 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-# Email Configuration (for development)
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-DEFAULT_FROM_EMAIL = 'noreply@airbnbclone.local'
+# Email Configuration
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', 'your-email@gmail.com')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', 'your-app-password')
+DEFAULT_FROM_EMAIL = f'ALX Travel App <{EMAIL_HOST_USER}>'
+
+# For development, you can use console backend
+if DEBUG:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# =============================================================================
+# CELERY CONFIGURATION
+# =============================================================================
+
+# Celery Broker settings
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'amqp://guest:guest@localhost:5672//')
+CELERY_RESULT_BACKEND = 'rpc://'
+
+# Celery message serialization
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+
+# Celery timezone
+CELERY_TIMEZONE = TIME_ZONE
+
+# Celery task routing
+CELERY_TASK_ROUTES = {
+    'listings.tasks.send_booking_confirmation_email': {'queue': 'emails'},
+    'listings.tasks.send_booking_reminder_email': {'queue': 'emails'},
+}
+
+# Task result expires in 1 hour (3600 seconds)
+CELERY_RESULT_EXPIRES = 3600
+
+# Task execution settings
+CELERY_TASK_RETRY_DELAY = 60  # Retry after 60 seconds
+CELERY_TASK_MAX_RETRIES = 3   # Maximum 3 retries
+CELERY_TASK_SOFT_TIME_LIMIT = 300  # 5 minutes soft limit
+CELERY_TASK_TIME_LIMIT = 600       # 10 minutes hard limit
+
+# Worker settings
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000
+
+# Celery Beat settings (for periodic tasks)
+CELERY_BEAT_SCHEDULE = {
+    # Example: Send reminder emails every day at 9 AM
+    # 'send-daily-reminders': {
+    #     'task': 'listings.tasks.send_daily_reminders',
+    #     'schedule': crontab(hour=9, minute=0),
+    # },
+}
+
+# Additional Celery settings for production
+if not DEBUG:
+    CELERY_WORKER_SEND_TASK_EVENTS = True
+    CELERY_TASK_SEND_SENT_EVENT = True
+    CELERY_SEND_EVENTS = True
+    CELERY_SEND_TASK_SENT_EVENT = True
+
+# =============================================================================
+# END CELERY CONFIGURATION
+# =============================================================================
 
 # Logging
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+        'file': {
+            'class': 'logging.FileHandler',
+            'filename': BASE_DIR / 'logs' / 'app.log',
+            'formatter': 'verbose',
         },
     },
     'root': {
         'handlers': ['console'],
+        'level': 'INFO',
     },
     'loggers': {
         'listings': {
-            'handlers': ['console'],
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'celery': {
+            'handlers': ['console', 'file'],
             'level': 'INFO',
             'propagate': False,
         },
     },
 }
+
+# Create logs directory if it doesn't exist
+os.makedirs(BASE_DIR / 'logs', exist_ok=True)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
