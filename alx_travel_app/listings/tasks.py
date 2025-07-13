@@ -1,5 +1,6 @@
 from celery import shared_task
-from django.core.mail import send_mail, EmailMultiAlternatives
+from django.core.mail import send_mail, EmailMultiAlternatives, get_connection
+from django.core.mail.backends.base import BaseEmailBackend
 from django.conf import settings
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
@@ -9,6 +10,69 @@ import logging
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
+
+
+def get_email_backend():
+    """
+    Get the configured Django email backend from settings.
+    This ensures we use the email backend specified in settings.py
+    """
+    return get_connection(
+        backend=getattr(settings, 'EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend'),
+        fail_silently=False
+    )
+
+
+def validate_email_settings():
+    """
+    Validate that essential email settings are configured.
+    Returns tuple (is_valid, error_message)
+    """
+    required_settings = ['DEFAULT_FROM_EMAIL']
+    
+    # Check if using SMTP backend and validate SMTP settings
+    email_backend = getattr(settings, 'EMAIL_BACKEND', '')
+    if 'smtp' in email_backend.lower():
+        required_settings.extend(['EMAIL_HOST', 'EMAIL_PORT'])
+        
+        # Check for authentication if not using console backend
+        if not email_backend.endswith('console.EmailBackend'):
+            if getattr(settings, 'EMAIL_USE_TLS', False) or getattr(settings, 'EMAIL_USE_SSL', False):
+                required_settings.extend(['EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD'])
+    
+    missing_settings = []
+    for setting in required_settings:
+        if not hasattr(settings, setting) or not getattr(settings, setting):
+            missing_settings.append(setting)
+    
+    if missing_settings:
+        return False, f"Missing required email settings: {', '.join(missing_settings)}"
+    
+    return True, "Email settings are valid"
+
+
+def log_email_backend_info():
+    """
+    Log information about the current email backend configuration.
+    """
+    backend = getattr(settings, 'EMAIL_BACKEND', 'Not configured')
+    logger.info(f"Using email backend: {backend}")
+    
+    if 'console' in backend:
+        logger.info("Console email backend detected - emails will be printed to console")
+    elif 'smtp' in backend:
+        host = getattr(settings, 'EMAIL_HOST', 'Not configured')
+        port = getattr(settings, 'EMAIL_PORT', 'Not configured')
+        use_tls = getattr(settings, 'EMAIL_USE_TLS', False)
+        use_ssl = getattr(settings, 'EMAIL_USE_SSL', False)
+        logger.info(f"SMTP backend configured - Host: {host}, Port: {port}, TLS: {use_tls}, SSL: {use_ssl}")
+    elif 'filebased' in backend:
+        file_path = getattr(settings, 'EMAIL_FILE_PATH', 'Not configured')
+        logger.info(f"File-based email backend - Path: {file_path}")
+    elif 'locmem' in backend:
+        logger.info("In-memory email backend detected - emails will be stored in memory")
+    else:
+        logger.warning(f"Unknown email backend: {backend}")
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
@@ -34,6 +98,14 @@ def send_booking_confirmation_email(self, booking_id, user_email, user_name, lis
     """
     try:
         logger.info(f"Starting email task for booking {booking_id} to {user_email}")
+        
+        # Validate email settings before attempting to send
+        is_valid, validation_message = validate_email_settings()
+        if not is_valid:
+            raise Exception(f"Email configuration invalid: {validation_message}")
+        
+        # Log email backend information
+        log_email_backend_info()
         
         # Calculate number of nights
         try:
@@ -91,26 +163,35 @@ ALX Travel App Team
             """.strip()
             html_message = None
         
-        # Create email message
+        # Get the configured email backend from settings
+        connection = get_email_backend()
+        
+        # Create and send email message using the configured backend
         if html_message:
             # Use EmailMultiAlternatives for HTML emails
             email = EmailMultiAlternatives(
                 subject=subject,
                 body=plain_message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                to=[user_email]
+                to=[user_email],
+                connection=connection
             )
             email.attach_alternative(html_message, "text/html")
-            email.send(fail_silently=False)
+            result = email.send(fail_silently=False)
         else:
-            # Use simple send_mail for text-only emails
-            send_mail(
+            # Use simple send_mail for text-only emails with explicit connection
+            result = send_mail(
                 subject=subject,
                 message=plain_message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user_email],
                 fail_silently=False,
+                connection=connection
             )
+        
+        # Verify email was sent successfully
+        if result == 0:
+            raise Exception("Email backend returned 0, indicating no emails were sent")
         
         success_message = f"Booking confirmation email sent successfully to {user_email} for booking {booking_id}"
         logger.info(success_message)
@@ -187,24 +268,33 @@ ALX Travel App Team
             """.strip()
             html_message = None
         
-        # Send email
+        # Get the configured email backend from settings
+        connection = get_email_backend()
+        
+        # Send email using the configured backend
         if html_message:
             email = EmailMultiAlternatives(
                 subject=subject,
                 body=plain_message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                to=[user_email]
+                to=[user_email],
+                connection=connection
             )
             email.attach_alternative(html_message, "text/html")
-            email.send(fail_silently=False)
+            result = email.send(fail_silently=False)
         else:
-            send_mail(
+            result = send_mail(
                 subject=subject,
                 message=plain_message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user_email],
                 fail_silently=False,
+                connection=connection
             )
+        
+        # Verify email was sent successfully
+        if result == 0:
+            raise Exception("Email backend returned 0, indicating no emails were sent")
         
         success_message = f"Booking reminder email sent successfully to {user_email} for booking {booking_id}"
         logger.info(success_message)
@@ -276,12 +366,16 @@ Best regards,
 ALX Travel App Team
         """.strip()
         
+        # Get the configured email backend from settings
+        connection = get_email_backend()
+        
         send_mail(
             subject=subject,
             message=plain_message,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[user_email],
             fail_silently=False,
+            connection=connection
         )
         
         success_message = f"Booking cancellation email sent successfully to {user_email} for booking {booking_id}"
@@ -319,6 +413,9 @@ def send_bulk_promotional_emails(user_emails, subject, message):
     failed_sends = 0
     errors = []
     
+    # Get the configured email backend from settings
+    connection = get_email_backend()
+    
     for email in user_emails:
         try:
             send_mail(
@@ -327,6 +424,7 @@ def send_bulk_promotional_emails(user_emails, subject, message):
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[email],
                 fail_silently=False,
+                connection=connection
             )
             successful_sends += 1
             logger.debug(f"Promotional email sent successfully to {email}")
@@ -371,12 +469,24 @@ def test_email_configuration(test_email):
         str: Success or error message
     """
     try:
+        # Validate email settings first
+        is_valid, validation_message = validate_email_settings()
+        if not is_valid:
+            raise Exception(f"Email configuration invalid: {validation_message}")
+        
+        # Log backend info
+        log_email_backend_info()
+        
+        # Get the configured email backend from settings
+        connection = get_email_backend()
+        
         send_mail(
             subject='ALX Travel App - Email Configuration Test',
             message='This is a test email to verify your email configuration is working correctly.',
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[test_email],
             fail_silently=False,
+            connection=connection
         )
         
         success_message = f"Test email sent successfully to {test_email}"
@@ -387,3 +497,48 @@ def test_email_configuration(test_email):
         error_message = f"Failed to send test email to {test_email}: {e}"
         logger.error(error_message)
         raise e
+
+
+@shared_task
+def validate_email_backend():
+    """
+    Validate the current email backend configuration.
+    
+    Returns:
+        dict: Validation results
+    """
+    try:
+        is_valid, message = validate_email_settings()
+        
+        result = {
+            'is_valid': is_valid,
+            'message': message,
+            'backend': getattr(settings, 'EMAIL_BACKEND', 'Not configured'),
+            'default_from_email': getattr(settings, 'DEFAULT_FROM_EMAIL', 'Not configured'),
+            'timestamp': timezone.now().isoformat()
+        }
+        
+        # Additional backend-specific info
+        backend = getattr(settings, 'EMAIL_BACKEND', '')
+        if 'smtp' in backend:
+            result.update({
+                'email_host': getattr(settings, 'EMAIL_HOST', 'Not configured'),
+                'email_port': getattr(settings, 'EMAIL_PORT', 'Not configured'),
+                'email_use_tls': getattr(settings, 'EMAIL_USE_TLS', False),
+                'email_use_ssl': getattr(settings, 'EMAIL_USE_SSL', False),
+            })
+        elif 'filebased' in backend:
+            result['email_file_path'] = getattr(settings, 'EMAIL_FILE_PATH', 'Not configured')
+        
+        logger.info(f"Email backend validation result: {result}")
+        return result
+        
+    except Exception as e:
+        error_result = {
+            'is_valid': False,
+            'message': f"Error during validation: {e}",
+            'backend': 'Unknown',
+            'timestamp': timezone.now().isoformat()
+        }
+        logger.error(f"Email backend validation failed: {error_result}")
+        return error_result
